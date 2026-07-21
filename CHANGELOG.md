@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## 0.8.0 21-07-26
+
 - *Breaking:* Updated to sequential-storage 8
 
 ## 0.7.0 16-04-26
