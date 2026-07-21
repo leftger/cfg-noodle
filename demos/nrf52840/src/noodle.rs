@@ -8,7 +8,9 @@ use cfg_noodle::{
     flash::Flash,
     minicbor::{self, CborLen, Decode, Encode},
     mutex::raw_impls::cs::CriticalSectionRawMutex,
-    sequential_storage::cache::PagePointerCache,
+    sequential_storage::cache::{
+        page_pointers::ArrayPagePointers, page_states::ArrayPageStates, Cache, Uncached,
+    },
     StorageList, StorageListNode,
 };
 use defmt::{error, info};
@@ -238,7 +240,11 @@ pub async fn worker(flash: DkMX25R) {
     let mut flash = Flash::new(
         flash,
         0..(TOTAL_SIZE as u32),
-        PagePointerCache::<PAGE_COUNT>::new(),
+        Cache::new(
+            ArrayPageStates::<PAGE_COUNT>::new(),
+            ArrayPagePointers::<PAGE_COUNT>::new(),
+            Uncached,
+        ),
     );
 
     let mut first_gc_done = false;

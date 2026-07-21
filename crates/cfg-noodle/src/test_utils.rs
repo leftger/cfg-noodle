@@ -11,7 +11,7 @@ use maitake_sync::WaitQueue;
 use minicbor::encode::write::{Cursor, EndOfSlice};
 use mutex_traits::ScopedRawMutex;
 use sequential_storage::{
-    cache::NoCache,
+    cache::{Cache, Uncached},
     mock_flash::{MockFlashBase, WriteCountCheck},
 };
 use tokio::select;
@@ -99,7 +99,7 @@ pub struct WorkerReport {
 // TODO: This type, the get_mock_flash() and worker_task() are not only specific to sequential storage's
 // mock flash, but also copy&pasted in the integration tests. If we go with the flash-trait approach,
 // these could be generic.
-pub type MockFlash = Flash<MockFlashBase<10, 16, 256>, NoCache>;
+pub type MockFlash = Flash<MockFlashBase<10, 16, 256>, Cache<Uncached, Uncached, Uncached>>;
 
 // ---- impl TestStorage ----
 
@@ -400,7 +400,7 @@ pub fn get_mock_flash() -> MockFlash {
     // TODO: Figure out why miri tests with unaligned buffers and whether
     // this needs any fixing. For now just disable the alignment check in MockFlash
     flash.alignment_check = !cfg!(miri);
-    Flash::new(flash, 0x0000..0x1000, NoCache::new())
+    Flash::new(flash, 0x0000..0x1000, Cache::new_uncached())
 }
 
 /// A simple worker task for sequential-storage based testing

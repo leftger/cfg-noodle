@@ -6,7 +6,9 @@ use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Instant, Timer, WithTimeout};
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use mx25r::SECTOR_SIZE;
-use sequential_storage::cache::PagePointerCache;
+use sequential_storage::cache::{
+    page_pointers::ArrayPagePointers, page_states::ArrayPageStates, Cache, Uncached,
+};
 use static_cell::ConstStaticCell;
 
 use crate::DkMX25R;
@@ -32,6 +34,8 @@ const TOTAL_SIZE: usize = 128 * 1024;
 // "the granularity that we can erase", which is sectors on our flash part.
 const PAGE_COUNT: usize = const { TOTAL_SIZE / (SECTOR_SIZE as usize) };
 
+type PageCache = Cache<ArrayPageStates<PAGE_COUNT>, ArrayPagePointers<PAGE_COUNT>, Uncached>;
+
 // Create a static list that will contain all of our nodes.
 //
 // This is generic over the kind of mutex. If you do not access the list in interrupt
@@ -42,7 +46,7 @@ pub static LIST: StorageList<CriticalSectionRawMutex, 3> = StorageList::new();
 // We put our scratch buffer in a `ConstStaticCell` to avoid ever creating it on the stack.
 //
 // It acts as a static singleton that we can then hold by reference in our I/O worker task.
-const BUF_SZ: usize = Flash::<DkMX25R, PagePointerCache<PAGE_COUNT>>::MAX_ELEM_SIZE;
+const BUF_SZ: usize = Flash::<DkMX25R, PageCache>::MAX_ELEM_SIZE;
 static BUF: ConstStaticCell<[u8; BUF_SZ]> = ConstStaticCell::new([0u8; BUF_SZ]);
 
 // This is the I/O worker task. Most users can use the default worker
@@ -76,7 +80,11 @@ pub async fn worker(
     let mut flash = Flash::new(
         flash,
         0..(TOTAL_SIZE as u32),
-        PagePointerCache::<PAGE_COUNT>::new(),
+        Cache::new(
+            ArrayPageStates::<PAGE_COUNT>::new(),
+            ArrayPagePointers::<PAGE_COUNT>::new(),
+            Uncached,
+        ),
     );
 
     let mut first_gc_done = false;

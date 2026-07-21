@@ -6,8 +6,8 @@ use core::{num::NonZeroU32, ops::Deref};
 
 use embedded_storage_async::nor_flash::{ErrorType, MultiwriteNorFlash};
 use sequential_storage::{
-    cache::{CacheImpl, NoCache},
-    queue::{QueueConfig, QueueIterator, QueueIteratorEntry, QueueStorage},
+    cache::{Cache, CacheImpl, Uncached},
+    queue::{QueueConfig, QueueConfigError, QueueIterator, QueueIteratorEntry, QueueStorage},
 };
 
 use crate::{
@@ -15,12 +15,12 @@ use crate::{
 };
 
 /// Owns a flash and the range reserved for the `StorageList`
-pub struct Flash<T: MultiwriteNorFlash, C: CacheImpl> {
+pub struct Flash<T: MultiwriteNorFlash, C: CacheImpl<()>> {
     queue: QueueStorage<T, C>,
 }
 
 /// An iterator over a [`Flash`]
-pub struct FlashIter<'flash, T: MultiwriteNorFlash, C: CacheImpl> {
+pub struct FlashIter<'flash, T: MultiwriteNorFlash, C: CacheImpl<()>> {
     iter: QueueIterator<'flash, T, C>,
 }
 
@@ -28,7 +28,7 @@ pub struct FlashIter<'flash, T: MultiwriteNorFlash, C: CacheImpl> {
 ///
 /// This represents a well-decoded element, where `half` contains the decoded
 /// contents that correspond with `qit`.
-pub struct FlashNode<'flash, 'iter, 'buf, T: MultiwriteNorFlash, C: CacheImpl> {
+pub struct FlashNode<'flash, 'iter, 'buf, T: MultiwriteNorFlash, C: CacheImpl<()>> {
     half: Option<HalfElem>,
     qit: QueueIteratorEntry<'flash, 'buf, 'iter, T, C>,
 }
@@ -62,7 +62,7 @@ const V0_END: u8 = consts::ELEM_VERSION_V0 | consts::ELEM_DISCRIMINANT_END;
 
 // ---- impl Flash ----
 
-impl<T: MultiwriteNorFlash, C: CacheImpl> Flash<T, C> {
+impl<T: MultiwriteNorFlash, C: CacheImpl<()>> Flash<T, C> {
     /// Creates a new Flash instance with the given flash device and address range.
     ///
     /// # Arguments
@@ -85,9 +85,13 @@ impl<T: MultiwriteNorFlash, C: CacheImpl> Flash<T, C> {
     /// * `flash` - The MultiwriteNorFlash device to use for storage operations
     /// * `range` - The address range within the flash device reserved for this storage
     /// * `cache` - the cache to use with this flash access
-    pub fn try_new(flash: T, range: core::ops::Range<u32>, cache: C) -> Option<Self> {
+    pub fn try_new(
+        flash: T,
+        range: core::ops::Range<u32>,
+        cache: C,
+    ) -> Result<Self, QueueConfigError> {
         let config = QueueConfig::try_new(range)?;
-        Some(Self {
+        Ok(Self {
             queue: QueueStorage::new(flash, config, cache),
         })
     }
@@ -103,7 +107,7 @@ impl<T: MultiwriteNorFlash, C: CacheImpl> Flash<T, C> {
     }
 }
 
-impl<T: MultiwriteNorFlash, C: CacheImpl> NdlDataStorage for Flash<T, C>
+impl<T: MultiwriteNorFlash, C: CacheImpl<()>> NdlDataStorage for Flash<T, C>
 where
     <T as ErrorType>::Error: MaybeDefmtFormat,
 {
@@ -164,7 +168,7 @@ where
 
 // ---- impl FlashIter ----
 
-impl<'flash, T: MultiwriteNorFlash, C: CacheImpl> NdlElemIter for FlashIter<'flash, T, C> {
+impl<'flash, T: MultiwriteNorFlash, C: CacheImpl<()>> NdlElemIter for FlashIter<'flash, T, C> {
     type Item<'this, 'buf>
         = FlashNode<'flash, 'this, 'buf, T, C>
     where
@@ -199,7 +203,7 @@ impl<'flash, T: MultiwriteNorFlash, C: CacheImpl> NdlElemIter for FlashIter<'fla
 
 // ---- impl FlashIterNode ----
 
-impl<T: MultiwriteNorFlash, C: CacheImpl> NdlElemIterNode for FlashNode<'_, '_, '_, T, C> {
+impl<T: MultiwriteNorFlash, C: CacheImpl<()>> NdlElemIterNode for FlashNode<'_, '_, '_, T, C> {
     type Error = sequential_storage::Error<<T as ErrorType>::Error>;
 
     fn data(&self) -> Option<Elem<'_>> {
@@ -275,7 +279,8 @@ where
     T: MultiwriteNorFlash,
 {
     // Items pushed to the queue have overhead
-    let baseline_overhead = QueueStorage::<T, NoCache>::item_overhead_size() as usize;
+    let baseline_overhead =
+        QueueStorage::<T, Cache<Uncached, Uncached, Uncached>>::item_overhead_size() as usize;
     // Items pushed to the queue require some alignment padding
     let len_roundup = len.next_multiple_of(crate::max(T::WRITE_SIZE, T::READ_SIZE));
 
