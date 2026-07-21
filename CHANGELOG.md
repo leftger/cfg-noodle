@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- *Breaking:* Updated to sequential-storage 8
+
 ## 0.7.0 16-04-26
 
 - *Breaking:* Updated embassy dependencies
