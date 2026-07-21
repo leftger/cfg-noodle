@@ -7,7 +7,7 @@ use core::{num::NonZeroU32, ops::Deref};
 use embedded_storage_async::nor_flash::{ErrorType, MultiwriteNorFlash};
 use sequential_storage::{
     cache::{Cache, CacheImpl, Uncached},
-    queue::{QueueConfig, QueueIterator, QueueIteratorEntry, QueueStorage},
+    queue::{QueueConfig, QueueConfigError, QueueIterator, QueueIteratorEntry, QueueStorage},
 };
 
 use crate::{
@@ -85,9 +85,13 @@ impl<T: MultiwriteNorFlash, C: CacheImpl<()>> Flash<T, C> {
     /// * `flash` - The MultiwriteNorFlash device to use for storage operations
     /// * `range` - The address range within the flash device reserved for this storage
     /// * `cache` - the cache to use with this flash access
-    pub fn try_new(flash: T, range: core::ops::Range<u32>, cache: C) -> Option<Self> {
-        let config = QueueConfig::try_new(range).ok()?;
-        Some(Self {
+    pub fn try_new(
+        flash: T,
+        range: core::ops::Range<u32>,
+        cache: C,
+    ) -> Result<Self, QueueConfigError> {
+        let config = QueueConfig::try_new(range)?;
+        Ok(Self {
             queue: QueueStorage::new(flash, config, cache),
         })
     }
