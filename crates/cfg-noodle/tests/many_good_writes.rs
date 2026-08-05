@@ -63,26 +63,31 @@ async fn many_good_writes_inner() {
     // This is a basic snapshot that we end up with the last three valid write records
     // as the only contents in flash. All older items have been continually invalidated,
     // leaving us with a fairly straightforward set in flash.
+    //
+    // NOTE: attaching a node that is not present in flash writes its default back, so
+    // the three attaches above produce three write records (seq_no 1-3) before the loop
+    // starts. This worker does not debounce writes, so each attach gets its own record.
+    // That is why the loop's 999 records are numbered 4..=1002.
     #[rustfmt::skip]
     let expected = &[
-        // Oldest item, seq_no 997
-        TestItem { ctr: 4980, elem: TestElem::Start { seq_no: NonZeroU32::new(997).unwrap() } },
-            TestItem { ctr: 4981, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 133, 116] } },
-            TestItem { ctr: 4982, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 38, 242] } },
-            TestItem { ctr: 4983, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 229] } },
-        TestItem { ctr: 4984, elem: TestElem::End { seq_no: NonZeroU32::new(997).unwrap(), calc_crc: 2789166760 } },
-        // Middle item, seq_no 998
-        TestItem { ctr: 4985, elem: TestElem::Start { seq_no: NonZeroU32::new(998).unwrap() } },
-            TestItem { ctr: 4986, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 133, 216] } },
-            TestItem { ctr: 4987, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 38, 252] } },
-            TestItem { ctr: 4988, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 230] } },
-        TestItem { ctr: 4989, elem: TestElem::End { seq_no: NonZeroU32::new(998).unwrap(), calc_crc: 1413754379 } },
-        // Newest item, seq_no 999
-        TestItem { ctr: 4990, elem: TestElem::Start { seq_no: NonZeroU32::new(999).unwrap() } },
-            TestItem { ctr: 4991, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 134, 60] } },
-            TestItem { ctr: 4992, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 39, 6] } },
-            TestItem { ctr: 4993, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 231] } },
-        TestItem { ctr: 4994, elem: TestElem::End { seq_no: NonZeroU32::new(999).unwrap(), calc_crc: 2388236464 } },
+        // Oldest item, seq_no 1000
+        TestItem { ctr: 4992, elem: TestElem::Start { seq_no: NonZeroU32::new(1000).unwrap() } },
+            TestItem { ctr: 4993, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 133, 116] } },
+            TestItem { ctr: 4994, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 38, 242] } },
+            TestItem { ctr: 4995, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 229] } },
+        TestItem { ctr: 4996, elem: TestElem::End { seq_no: NonZeroU32::new(1000).unwrap(), calc_crc: 2789166760 } },
+        // Middle item, seq_no 1001
+        TestItem { ctr: 4997, elem: TestElem::Start { seq_no: NonZeroU32::new(1001).unwrap() } },
+            TestItem { ctr: 4998, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 133, 216] } },
+            TestItem { ctr: 4999, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 38, 252] } },
+            TestItem { ctr: 5000, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 230] } },
+        TestItem { ctr: 5001, elem: TestElem::End { seq_no: NonZeroU32::new(1001).unwrap(), calc_crc: 1413754379 } },
+        // Newest item, seq_no 1002
+        TestItem { ctr: 5002, elem: TestElem::Start { seq_no: NonZeroU32::new(1002).unwrap() } },
+            TestItem { ctr: 5003, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 134, 60] } },
+            TestItem { ctr: 5004, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 39, 6] } },
+            TestItem { ctr: 5005, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 231] } },
+        TestItem { ctr: 5006, elem: TestElem::End { seq_no: NonZeroU32::new(1002).unwrap(), calc_crc: 2388236464 } },
     ];
 
     assert_eq!(contents, expected);
@@ -152,28 +157,28 @@ async fn many_good_writes_inner() {
     let rpt = hdl.await.unwrap();
     rpt.assert_no_errs();
 
-    // Similar to our snapshot above, we want to see exactly one write record (997)
-    // get rotated out, with the newest one (1000) as the newest item.
+    // Similar to our snapshot above, we want to see exactly one write record (1000)
+    // get rotated out, with the newest one (1003) as the newest item.
     #[rustfmt::skip]
     let expected2 = &[
-        // Oldest item, seq_no 998
-        TestItem { ctr: 4985, elem: TestElem::Start { seq_no: NonZeroU32::new(998).unwrap() } },
-            TestItem { ctr: 4986, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 133, 216] } },
-            TestItem { ctr: 4987, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 38, 252] } },
-            TestItem { ctr: 4988, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 230] } },
-        TestItem { ctr: 4989, elem: TestElem::End { seq_no: NonZeroU32::new(998).unwrap(), calc_crc: 1413754379 } },
-        // Middle item, seq_no 999
-        TestItem { ctr: 4990, elem: TestElem::Start { seq_no: NonZeroU32::new(999).unwrap() } },
-            TestItem { ctr: 4991, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 134, 60] } },
-            TestItem { ctr: 4992, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 39, 6] } },
-            TestItem { ctr: 4993, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 231] } },
-        TestItem { ctr: 4994, elem: TestElem::End { seq_no: NonZeroU32::new(999).unwrap(), calc_crc: 2388236464 } },
-        // Newest item, seq_no 1000
-        TestItem { ctr: 4995, elem: TestElem::Start { seq_no: NonZeroU32::new(1000).unwrap() } },
-            TestItem { ctr: 4996, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 134, 160] } },
-            TestItem { ctr: 4997, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 39, 16] } },
-            TestItem { ctr: 4998, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 232] } },
-        TestItem { ctr: 4999, elem: TestElem::End { seq_no: NonZeroU32::new(1000).unwrap(), calc_crc: 2217662377 } },
+        // Oldest item, seq_no 1001
+        TestItem { ctr: 4997, elem: TestElem::Start { seq_no: NonZeroU32::new(1001).unwrap() } },
+            TestItem { ctr: 4998, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 133, 216] } },
+            TestItem { ctr: 4999, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 38, 252] } },
+            TestItem { ctr: 5000, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 230] } },
+        TestItem { ctr: 5001, elem: TestElem::End { seq_no: NonZeroU32::new(1001).unwrap(), calc_crc: 1413754379 } },
+        // Middle item, seq_no 1002
+        TestItem { ctr: 5002, elem: TestElem::Start { seq_no: NonZeroU32::new(1002).unwrap() } },
+            TestItem { ctr: 5003, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 134, 60] } },
+            TestItem { ctr: 5004, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 39, 6] } },
+            TestItem { ctr: 5005, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 231] } },
+        TestItem { ctr: 5006, elem: TestElem::End { seq_no: NonZeroU32::new(1002).unwrap(), calc_crc: 2388236464 } },
+        // Newest item, seq_no 1003
+        TestItem { ctr: 5007, elem: TestElem::Start { seq_no: NonZeroU32::new(1003).unwrap() } },
+            TestItem { ctr: 5008, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 134, 160] } },
+            TestItem { ctr: 5009, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 39, 16] } },
+            TestItem { ctr: 5010, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 232] } },
+        TestItem { ctr: 5011, elem: TestElem::End { seq_no: NonZeroU32::new(1003).unwrap(), calc_crc: 2217662377 } },
     ];
 
     let contents = &rpt.flash.items;
@@ -231,14 +236,16 @@ async fn many_good_writes_inner_one_kept_record() {
     // This is a basic snapshot that we end up with the last valid write record
     // as the only contents in flash. All older items have been continually invalidated,
     // leaving us with a fairly straightforward set in flash.
+    //
+    // NOTE: see `many_good_writes_inner` for why the loop's records start at seq_no 4.
     #[rustfmt::skip]
     let expected = &[
-        // Newest item, seq_no 999
-        TestItem { ctr: 4990, elem: TestElem::Start { seq_no: NonZeroU32::new(999).unwrap() } },
-            TestItem { ctr: 4991, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 134, 60] } },
-            TestItem { ctr: 4992, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 39, 6] } },
-            TestItem { ctr: 4993, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 231] } },
-        TestItem { ctr: 4994, elem: TestElem::End { seq_no: NonZeroU32::new(999).unwrap(), calc_crc: 2388236464 } },
+        // Newest item, seq_no 1002
+        TestItem { ctr: 5002, elem: TestElem::Start { seq_no: NonZeroU32::new(1002).unwrap() } },
+            TestItem { ctr: 5003, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 134, 60] } },
+            TestItem { ctr: 5004, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 39, 6] } },
+            TestItem { ctr: 5005, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 231] } },
+        TestItem { ctr: 5006, elem: TestElem::End { seq_no: NonZeroU32::new(1002).unwrap(), calc_crc: 2388236464 } },
     ];
 
     assert_eq!(contents, expected);
@@ -308,16 +315,16 @@ async fn many_good_writes_inner_one_kept_record() {
     let rpt = hdl.await.unwrap();
     rpt.assert_no_errs();
 
-    // Similar to our snapshot above, we want to see all records (999)
-    // get rotated out, with the newest one (1000) as the newest item.
+    // Similar to our snapshot above, we want to see all records (1002)
+    // get rotated out, with the newest one (1003) as the newest item.
     #[rustfmt::skip]
     let expected2 = &[
-        // Newest item, seq_no 1000
-        TestItem { ctr: 4995, elem: TestElem::Start { seq_no: NonZeroU32::new(1000).unwrap() } },
-            TestItem { ctr: 4996, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 134, 160] } },
-            TestItem { ctr: 4997, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 39, 16] } },
-            TestItem { ctr: 4998, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 232] } },
-        TestItem { ctr: 4999, elem: TestElem::End { seq_no: NonZeroU32::new(1000).unwrap(), calc_crc: 2217662377 } },
+        // Newest item, seq_no 1003
+        TestItem { ctr: 5007, elem: TestElem::Start { seq_no: NonZeroU32::new(1003).unwrap() } },
+            TestItem { ctr: 5008, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 51, 129, 26, 0, 1, 134, 160] } },
+            TestItem { ctr: 5009, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 50, 129, 25, 39, 16] } },
+            TestItem { ctr: 5010, elem: TestElem::Data { data: vec![1, 108, 116, 101, 115, 116, 47, 99, 111, 110, 102, 105, 103, 49, 129, 25, 3, 232] } },
+        TestItem { ctr: 5011, elem: TestElem::End { seq_no: NonZeroU32::new(1003).unwrap(), calc_crc: 2217662377 } },
     ];
 
     let contents = &rpt.flash.items;

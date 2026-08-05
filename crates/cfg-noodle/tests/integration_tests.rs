@@ -1,4 +1,4 @@
-use std::{num::NonZeroU32, sync::Arc};
+use std::sync::Arc;
 
 use cfg_noodle::{StorageList, StorageListNode, test_utils};
 use log::{info, warn};
@@ -66,6 +66,51 @@ async fn test_read_from_empty_flash() {
                 config, default_config,
                 "Loaded config should match default config"
             );
+        })
+        .await;
+}
+
+/// Test that a default value written back during `attach` reaches the flash.
+///
+/// When a node is not present in flash, `attach` initializes it with its default and
+/// marks it as needing a write. Nothing else is going to ask for that write, so the
+/// node itself has to tell the worker task about it.
+///
+/// Note that the worker used here does not flush on shutdown, so the record can only
+/// come from the write-back, and no `write()` is performed by this test.
+#[test(tokio::test)]
+async fn test_default_is_written_back() {
+    static LIST: StorageList<CriticalSectionRawMutex, 3> = StorageList::new();
+    static NODE: StorageListNode<TestConfig> = StorageListNode::new("test/config");
+
+    let local = LocalSet::new();
+    local
+        .run_until(async move {
+            info!("Spawning worker task");
+            let stopper = Arc::new(WaitQueue::new());
+            let worker =
+                tokio::task::spawn_local(test_utils::worker_task_tst_sto(&LIST, stopper.clone()));
+
+            let handle = NODE.attach(&LIST).await.unwrap();
+            assert_eq!(handle.load(), TestConfig::default());
+
+            // Give the worker time to persist the write-back
+            sleep(Duration::from_millis(100)).await;
+
+            stopper.close();
+            let report = worker.await.unwrap();
+            report.assert_no_errs();
+
+            let items = &report.flash.items;
+            assert_eq!(
+                items.len(),
+                3,
+                "expected a single write record, got: {}",
+                report.flash.print_items()
+            );
+            assert!(matches!(items[0].elem, TestElem::Start { .. }));
+            assert!(matches!(items[1].elem, TestElem::Data { .. }));
+            assert!(matches!(items[2].elem, TestElem::End { .. }));
         })
         .await;
 }
@@ -287,20 +332,20 @@ async fn test_read_interrupted_write() {
             report.assert_no_errs();
             let mut flash = report.flash;
 
-            warn!("Corrupt an item from write record 2");
+            warn!("Corrupt an item from the newest write record");
             warn!("State before:");
             for i in flash.items.iter() {
                 warn!("{i:?}");
             }
 
-            let mut iter = flash.items.iter_mut();
-            loop {
-                let item = iter.next().unwrap();
-                if matches!(item.elem, TestElem::Start { seq_no } if seq_no == NonZeroU32::new(2).unwrap()) {
-                    break;
-                }
-            }
-            let item = iter.next().unwrap();
+            // Corrupt a data element of the NEWEST write record, so the system has to
+            // fall back to the record written before it.
+            let newest_start = flash
+                .items
+                .iter()
+                .rposition(|i| matches!(i.elem, TestElem::Start { .. }))
+                .unwrap();
+            let item = flash.items.get_mut(newest_start + 1).unwrap();
             let TestElem::Data { data } = &mut item.elem else {
                 panic!();
             };

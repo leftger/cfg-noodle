@@ -36,6 +36,13 @@ pub struct TestStorage {
     ctr: u64,
     pub items: Vec<TestItem>,
     pub forced_error: Option<TestStorageError>,
+    /// If set, this many elements are yielded successfully, and every read after
+    /// that fails with [`TestStorageError::FakeBadRead`].
+    ///
+    /// Unlike `forced_error`, this simulates a storage that goes bad PARTWAY through
+    /// a pass, which is what makes partially-completed scans and collections
+    /// observable.
+    pub reads_until_error: Option<usize>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -275,6 +282,12 @@ impl<'a> NdlElemIter for TestStorageIter<'a> {
     {
         if let Some(err) = self.sto.forced_error {
             return Err(err);
+        }
+        if let Some(remain) = self.sto.reads_until_error.as_mut() {
+            if *remain == 0 {
+                return Err(TestStorageError::FakeBadRead);
+            }
+            *remain -= 1;
         }
         if let Some(item) = self.remain_items.pop_front() {
             debug!("Popping {item:?}");

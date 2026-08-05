@@ -467,7 +467,7 @@ where
             .expect("waitqueue never closes");
 
         // Are we in a state with a valid T?
-        match state {
+        let wrote_default = match state {
             // This should never happen because `wait_for_value` explicitly does not yield
             // until we've reached the Non-Initial state.
             State::Initial => unreachable!("shouldn't observe this in attach"),
@@ -487,15 +487,22 @@ where
                 body.write(f());
                 // We do NOT hold the lock, use Relaxed ordering.
                 hdrref.state.store(State::NeedsWrite, Ordering::Release);
+                true
             }
             // This state is set by this function if the node is non resident
             State::NeedsWrite if !already_attached => {
                 unreachable!("shouldn't observe this in first attach")
             }
             // If this isn't our first attach, we might see already pending data
-            State::NeedsWrite => (),
+            State::NeedsWrite => false,
             // This is the usual case: key found in flash and node hydrated
-            State::ValidNoWriteNeeded => (),
+            State::ValidNoWriteNeeded => false,
+        };
+
+        // The default we just wrote back only lives in RAM, so the worker task needs
+        // to know that there is something to persist.
+        if wrote_default {
+            list.needs_write.wake();
         }
 
         // SAFETY:

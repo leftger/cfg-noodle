@@ -449,12 +449,41 @@ impl<R: ScopedRawMutex, const KEPT_RECORDS: usize> StorageList<R, KEPT_RECORDS> 
                 });
             }
 
+            // Everything outside of the known-good records is considered garbage, so
+            // collecting with a cache that has not been (re-)built would pop the entire
+            // storage. This can happen if a previous collection failed partway.
+            if !guard.seq_state.initial_scan_completed() {
+                warn!("Garbage collect requested without a complete scan");
+                return Err(LoadStoreError::AppError(Error::NeedsFirstRead));
+            }
+
             // Take the seq_state to inhibit any other reads/writes until
             // we successfully complete, AND that a re-index will be required
             // even if we early-return here
             core::mem::replace(&mut guard.seq_state, SeqState::new())
         };
 
+        let res = self.collect_garbage(storage, buf, &cur_seq_state).await;
+
+        if res.is_err() {
+            // We may have popped some elements, so the cached positions are no longer
+            // valid, and we leave the (now empty) cache in place to force a re-scan.
+            // Still record that collection is outstanding, otherwise the failure is
+            // silently forgotten and we would report "nothing to do" from here on.
+            self.inner.lock().await.seq_state.needs_gc = true;
+        }
+
+        res
+    }
+
+    /// The body of [`Self::process_garbage()`], operating on the seq_state that was
+    /// taken by the caller.
+    async fn collect_garbage<S: NdlDataStorage>(
+        &'static self,
+        storage: &mut S,
+        buf: &mut [u8],
+        cur_seq_state: &SeqState<KEPT_RECORDS>,
+    ) -> Result<ProcessGarbageCounters, LoadStoreError<S::Error>> {
         // Helper function that iterates over each present GoodWriteRecord,
         // and returns whether ANY of the good records contain this iterator-index
         //
@@ -643,7 +672,15 @@ impl<const KEPT_RECORDS: usize> StorageListInner<KEPT_RECORDS> {
                 // end of list
                 Ok(None) => break,
                 // flash error
-                Err(e) => return Err(LoadStoreError::FlashRead(e)),
+                Err(e) => {
+                    // We may have recorded some Write Records already, but we have NOT
+                    // seen the whole storage, so the records we found are not necessarily
+                    // the newest ones, and their positions are only meaningful as part of
+                    // a complete scan. Throw the partial results away so that the next
+                    // call performs a full scan again.
+                    self.seq_state = SeqState::new();
+                    return Err(LoadStoreError::FlashRead(e));
+                }
             };
             let idx = ctr;
             ctr += 1;
@@ -1292,7 +1329,10 @@ async fn verify_list_in_flash<S: NdlDataStorage>(
                     seq_chk, crc_chk1, crc_chk2, ctr_chk, good
                 );
                 if good {
-                    return Ok(RangeInclusive::new(start_pos, total_items_seen_ctr));
+                    // Like the start element, the end element sits 1 back from the
+                    // # of items seen.
+                    let end_pos = total_items_seen_ctr - 1;
+                    return Ok(RangeInclusive::new(start_pos, end_pos));
                 } else {
                     return Err(LoadStoreError::WriteVerificationFailed);
                 }

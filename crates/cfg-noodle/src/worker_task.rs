@@ -1,7 +1,7 @@
 //! Default worker task implementation
 
 use core::fmt::Debug;
-use embassy_futures::select::{Either, Either3, select};
+use embassy_futures::select::{Either, Either4, select};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
 use embassy_time::Duration;
 use mutex_traits::ScopedRawMutex;
@@ -45,6 +45,13 @@ use crate::{
 ///
 /// Errors during storage operations are logged but do not cause the task to terminate.
 /// The task will continue processing subsequent signals even if individual operations fail.
+///
+/// Failures that would otherwise leave the list stuck are retried every
+/// [`RETRY_DELAY`], because nothing else will signal this task to try again:
+///
+/// - A failed `process_reads` leaves every caller of `attach()` waiting for hydration.
+/// - A failed `process_garbage` resets the cache, so writes report
+///   [`Error::NeedsFirstRead`] until reads have run again.
 pub async fn default_worker_task<
     R: ScopedRawMutex + Sync,
     S: NdlDataStorage,
@@ -63,6 +70,7 @@ pub async fn default_worker_task<
     let waker_future = async {
         let mut first_gc_done = false;
         let needs_gc: Signal<NoopRawMutex, Duration> = Signal::new();
+        let needs_retry: Signal<NoopRawMutex, Duration> = Signal::new();
 
         // Wait for either the needs_read or needs_write to be signaled
         loop {
@@ -112,50 +120,62 @@ pub async fn default_worker_task<
                 debug!("Got needs_gc signal. Continuing after delay of {}", delay);
                 embassy_time::Timer::after(delay).await;
             };
+            let retry_fut = async {
+                let delay = needs_retry.wait().await;
+                debug!(
+                    "Got needs_retry signal. Continuing after delay of {}",
+                    delay
+                );
+                embassy_time::Timer::after(delay).await;
+            };
 
             info!("worker_task waiting for signals");
-            match embassy_futures::select::select3(read_fut, write_fut, gc_fut).await {
+            match embassy_futures::select::select4(read_fut, write_fut, gc_fut, retry_fut).await {
                 // needs_read signaled
-                Either3::First(_) => {
+                Either4::First(_) => {
                     info!("worker task got needs_read signal, processing reads");
 
                     match list.process_reads(&mut flash, buf).await {
-                        Ok(rpt) => info!("process_reads success: {:?}", rpt),
-                        Err(e) => error!("Error in process_reads: {:?}", e),
-                    }
+                        Ok(rpt) => {
+                            info!("process_reads success: {:?}", rpt);
 
-                    // On the first run (i.e., after starup) we want to run garbage collection once to
-                    // have everything in a clean state.
-                    // Delay this by 120 seconds to give other tasks time to do work before we potentially
-                    // block the for a longer time with garbage collection.
-                    if !first_gc_done {
-                        info!(
-                            "worker task finished process_reads. Trigger process_garbage with delay"
-                        );
+                            // On the first run (i.e., after starup) we want to run garbage collection once to
+                            // have everything in a clean state.
+                            // Delay this by 120 seconds to give other tasks time to do work before we potentially
+                            // block the for a longer time with garbage collection.
+                            if !first_gc_done {
+                                info!(
+                                    "worker task finished process_reads. Trigger process_garbage with delay"
+                                );
 
-                        needs_gc.signal(Duration::from_secs(120));
+                                needs_gc.signal(Duration::from_secs(120));
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error in process_reads: {:?}", e);
+                            // Nodes are still waiting to be hydrated in `attach()`, and only
+                            // a successful read will release them.
+                            needs_retry.signal(RETRY_DELAY);
+                        }
                     }
                 }
                 // needs_write signaled
-                Either3::Second(_) => {
+                Either4::Second(_) => {
                     info!("worker task got needs_write signal, first process_garbage then write");
 
-                    match list.process_garbage(&mut flash, buf).await {
-                        Ok(rpt) => info!("process_garbage success: {:?}", rpt),
-                        Err(e) => error!("Error in process_garbage: {:?}", e),
-                    }
-                    match list.process_writes(&mut flash, buf).await {
-                        Ok(rpt) => info!("process_writes success: {:?}", rpt),
-                        Err(e) => error!("Error in process_writes: {:?}", e),
-                    }
+                    let res = collect_and_write(list, &mut flash, buf).await;
 
                     info!("worker task finished process_writes, triggering process_garbage");
                     match list.process_garbage(&mut flash, buf).await {
                         Ok(rpt) => info!("process_garbage success: {:?}", rpt),
                         Err(e) => error!("Error in process_garbage: {:?}", e),
                     }
+
+                    if needs_rebuild(&res) {
+                        needs_retry.signal(RETRY_DELAY);
+                    }
                 }
-                Either3::Third(_) => {
+                Either4::Third(_) => {
                     info!("worker task got needs_gc signal, run process_garbage");
                     match list.process_garbage(&mut flash, buf).await {
                         Ok(rpt) => {
@@ -163,6 +183,27 @@ pub async fn default_worker_task<
                             first_gc_done = true;
                         }
                         Err(e) => error!("Error in process_garbage: {:?}", e),
+                    }
+                }
+                Either4::Fourth(_) => {
+                    info!("worker task retrying after an earlier failure");
+
+                    match list.process_reads(&mut flash, buf).await {
+                        Ok(rpt) => {
+                            info!("process_reads success: {:?}", rpt);
+
+                            // Rebuilding the cache is what makes writing possible again,
+                            // and the failure that got us here may have left changes
+                            // unwritten, so flush them out.
+                            let res = collect_and_write(list, &mut flash, buf).await;
+                            if needs_rebuild(&res) {
+                                needs_retry.signal(RETRY_DELAY);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error in process_reads: {:?}", e);
+                            needs_retry.signal(RETRY_DELAY);
+                        }
                     }
                 }
             };
@@ -179,22 +220,70 @@ pub async fn default_worker_task<
     match list.process_writes(&mut flash, buf).await {
         Ok(rpt) => info!("process_writes success: {:?}", rpt),
         Err(LoadStoreError::AppError(Error::NeedsGarbageCollect)) => {
-            match list.process_garbage(&mut flash, buf).await {
-                Ok(rpt) => info!("process_garbage success: {:?}", rpt),
-                Err(e) => error!("Error in process_garbage: {:?}", e),
-            }
-            match list.process_writes(&mut flash, buf).await {
-                Ok(rpt) => info!("process_writes success: {:?}", rpt),
-                Err(e) => error!("Error in process_writes: {:?}", e),
-            }
+            let _ = collect_and_write(list, &mut flash, buf).await;
         }
         Err(LoadStoreError::AppError(Error::NeedsFirstRead)) => {
-            warn!("closing worker without performing first read");
+            // Either no read ever completed, or an earlier failure reset the cache.
+            // In the latter case there may be unwritten changes, so make a final
+            // attempt to rebuild the cache and persist them.
+            warn!("closing worker without a completed read, attempting to recover");
+            match list.process_reads(&mut flash, buf).await {
+                Ok(rpt) => {
+                    info!("process_reads success: {:?}", rpt);
+                    let _ = collect_and_write(list, &mut flash, buf).await;
+                }
+                Err(e) => error!("Error in process_reads: {:?}", e),
+            }
         }
         Err(e) => error!("Error in process_writes: {:?}", e),
     }
 
     info!("worker task stopped!");
+}
+
+/// How long to wait before retrying an operation that failed in a way that would
+/// otherwise leave the list stuck.
+pub const RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Collect garbage, then write out any pending changes.
+///
+/// Collection has to happen first, because [`StorageList::process_writes()`] refuses
+/// to write while a collection is outstanding.
+///
+/// Returns the result of the write, so the caller can tell whether the cache needs
+/// to be rebuilt before writing can succeed.
+async fn collect_and_write<R, S, const KEPT_RECORDS: usize>(
+    list: &'static StorageList<R, KEPT_RECORDS>,
+    flash: &mut S,
+    buf: &mut [u8],
+) -> Result<(), LoadStoreError<S::Error>>
+where
+    R: ScopedRawMutex + Sync,
+    S: NdlDataStorage,
+    S::Error: Debug,
+{
+    match list.process_garbage(flash, buf).await {
+        Ok(rpt) => info!("process_garbage success: {:?}", rpt),
+        Err(e) => error!("Error in process_garbage: {:?}", e),
+    }
+    match list.process_writes(flash, buf).await {
+        Ok(rpt) => {
+            info!("process_writes success: {:?}", rpt);
+            Ok(())
+        }
+        Err(e) => {
+            error!("Error in process_writes: {:?}", e);
+            Err(e)
+        }
+    }
+}
+
+/// Does this result mean that the cache must be re-built by a read before the
+/// operation can succeed?
+fn needs_rebuild<T: Debug + crate::logging::MaybeDefmtFormat>(
+    res: &Result<(), LoadStoreError<T>>,
+) -> bool {
+    matches!(res, Err(LoadStoreError::AppError(Error::NeedsFirstRead)))
 }
 
 /// A worker tasks that always reads no entries and ignores all writes
