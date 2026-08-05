@@ -163,11 +163,15 @@ pub async fn default_worker_task<
                 Either4::Second(_) => {
                     info!("worker task got needs_write signal, first process_garbage then write");
 
-                    let res = collect_and_write(list, &mut flash, buf).await;
+                    let (gc_ok, res) = collect_and_write(list, &mut flash, buf).await;
+                    first_gc_done |= gc_ok;
 
                     info!("worker task finished process_writes, triggering process_garbage");
                     match list.process_garbage(&mut flash, buf).await {
-                        Ok(rpt) => info!("process_garbage success: {:?}", rpt),
+                        Ok(rpt) => {
+                            info!("process_garbage success: {:?}", rpt);
+                            first_gc_done = true;
+                        }
                         Err(e) => error!("Error in process_garbage: {:?}", e),
                     }
 
@@ -195,7 +199,8 @@ pub async fn default_worker_task<
                             // Rebuilding the cache is what makes writing possible again,
                             // and the failure that got us here may have left changes
                             // unwritten, so flush them out.
-                            let res = collect_and_write(list, &mut flash, buf).await;
+                            let (gc_ok, res) = collect_and_write(list, &mut flash, buf).await;
+                            first_gc_done |= gc_ok;
                             if needs_rebuild(&res) {
                                 needs_retry.signal(RETRY_DELAY);
                             }
@@ -250,23 +255,29 @@ pub const RETRY_DELAY: Duration = Duration::from_secs(1);
 /// Collection has to happen first, because [`StorageList::process_writes()`] refuses
 /// to write while a collection is outstanding.
 ///
-/// Returns the result of the write, so the caller can tell whether the cache needs
-/// to be rebuilt before writing can succeed.
+/// Returns whether the collection succeeded, and the result of the write, so the
+/// caller can tell whether the cache needs to be rebuilt before writing can succeed.
 async fn collect_and_write<R, S, const KEPT_RECORDS: usize>(
     list: &'static StorageList<R, KEPT_RECORDS>,
     flash: &mut S,
     buf: &mut [u8],
-) -> Result<(), LoadStoreError<S::Error>>
+) -> (bool, Result<(), LoadStoreError<S::Error>>)
 where
     R: ScopedRawMutex + Sync,
     S: NdlDataStorage,
     S::Error: Debug,
 {
-    match list.process_garbage(flash, buf).await {
-        Ok(rpt) => info!("process_garbage success: {:?}", rpt),
-        Err(e) => error!("Error in process_garbage: {:?}", e),
-    }
-    match list.process_writes(flash, buf).await {
+    let gc_ok = match list.process_garbage(flash, buf).await {
+        Ok(rpt) => {
+            info!("process_garbage success: {:?}", rpt);
+            true
+        }
+        Err(e) => {
+            error!("Error in process_garbage: {:?}", e);
+            false
+        }
+    };
+    let res = match list.process_writes(flash, buf).await {
         Ok(rpt) => {
             info!("process_writes success: {:?}", rpt);
             Ok(())
@@ -275,7 +286,8 @@ where
             error!("Error in process_writes: {:?}", e);
             Err(e)
         }
-    }
+    };
+    (gc_ok, res)
 }
 
 /// Does this result mean that the cache must be re-built by a read before the
