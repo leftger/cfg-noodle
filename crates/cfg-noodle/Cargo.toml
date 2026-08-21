@@ -70,9 +70,9 @@ et-generic-queue-8 = ["embassy-time?/generic-queue-8"]
 [dependencies]
 crc                     = "3.4.0"
 critical-section        = "1.2.0"
-embassy-futures         = { git = "https://github.com/embassy-rs/embassy", rev = "0af1937a5ac77f52fea943b677088c38ef9e91c6", optional = true }
-embassy-sync            = { git = "https://github.com/embassy-rs/embassy", rev = "a18084f6e0c7f0756e4d96bd988ed78455ba1a74", optional = true }
-embassy-time            = { git = "https://github.com/embassy-rs/embassy", rev = "0af1937a5ac77f52fea943b677088c38ef9e91c6", optional = true }
+embassy-futures         = { git = "https://github.com/embassy-rs/embassy", optional = true }
+embassy-sync            = { git = "https://github.com/embassy-rs/embassy", optional = true }
+embassy-time            = { git = "https://github.com/embassy-rs/embassy", optional = true }
 embedded-storage-async  = "0.4.1"
 mutex-traits            = "1.0.0"
 pin-project             = "1.1.10"
